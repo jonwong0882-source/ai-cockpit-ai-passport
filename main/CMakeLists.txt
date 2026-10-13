@@ -1,0 +1,1 @@
+idf_component_register(SRCS "token_main.c" "token_model.c" "token_ui_logic.c" "token_wifi.c" "demo_radio.c" "demo_blufi_security.c" "../assets/fonts/token_digits.c" INCLUDE_DIRS "." REQUIRES bsp bt esp_event esp_netif esp_timer esp_wifi nvs_flash esp_http_client mbedtls json)

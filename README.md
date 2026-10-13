@@ -1,0 +1,83 @@
+[简体中文](README.zh_CN.md)
+
+# AI Cockpit
+
+Turn AI Passport into a pocket dashboard for your Codex use. Large neon digits,
+a 50-day heatmap and ten-cell quota bars show your daily AI habit. Hold OK for
+settings; arrows cycle nine information pages. The screen starts off, wakes on
+OK and blanks after 30 idle seconds while background sync continues.
+
+## What it shows
+
+Last seven completed dates, yesterday, last calendar week, last month,
+month-to-date, current weekly quota/reset, all-time tokens, a 7/30/50-day map,
+and recorded completed-week quota peaks. Missing records stay unknown.
+Daily quota budget is one seventh of a weekly allowance; longer budgets scale
+by calendar days. Sampled quota changes may undercount gaps; pre-installation
+quota history cannot be reconstructed. Token counts and quota are separate.
+
+## Start with your own account
+
+1. Install/sign in to Codex on an always-on Mac. The bridge uses the account
+   usage and rate-limit methods supplied by your local Codex app-server; it
+   sends no prompts. Your Codex version/account must support those methods.
+2. Download this repository. From its folder, create a Python environment:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r companion/requirements.txt
+python companion/setup_backend.py --install
+```
+
+The last command generates a private device key and installs a login service.
+If Codex isn't in PATH, add `--codex /absolute/path/to/codex`. Keep this checkout
+and Python environment in place. The service starts after login, stays alive,
+and listens on 127.0.0.1:18741. Check `/health` locally; upstream_ready must be true.
+Only one bridge may use the port. Sleeping/offline Macs cannot update the board.
+3. Provide your own reachable HTTPS endpoint forwarding to this local service,
+   for example a tunnel. Protect `/v1/board` with the generated bearer key; the
+   bridge already verifies it. The device URL should end in `/v1/board`.
+   The endpoint must be reachable from your phone hotspot. This repository does
+   not create your domain or tunnel automatically.
+4. Flash the community full firmware first using the official community tool.
+   A full flash resets previous device settings. Then connect with a USB data
+   cable, list ports, and write only your API configuration:
+
+```sh
+python -m serial.tools.list_ports -v
+python companion/configure_device.py --url https://YOUR-HOST/v1/board --port YOUR-PORT --confirm-reset-settings
+```
+
+Choose the AI Passport port explicitly. This configuration step resets saved
+Wi-Fi/settings too; do it before phone provisioning. Credentials remain private
+in `.local`; never upload that directory or share the settings binary.
+5. Press OK once to wake. Hold OK to open SETTINGS. Use UP/DOWN to choose
+   BLE / START; click OK. In the EspBlufi phone app scan for BLUFI_CodexBoard,
+   connect, open Wi-Fi configuration, choose Station/STA, and enter your 2.4GHz
+   Wi-Fi or hotspot SSID and password. iPhone hotspots may need Maximize
+   Compatibility. After connection the board reboots to release setup memory;
+   press OK again. The regular iPhone Bluetooth settings list is not used.
+6. Wait for SYNCED and UPD. Arrows cycle nine pages; the map's short OK cycles
+   7/30/50 days, other information pages short OK syncs. Hold OK opens settings
+   and hold OK there returns. Settings offers Wi-Fi reconnect, sync interval
+   (5/15/30/60 minutes or manual), and BLE setup. The Mac samples every 5 minutes.
+
+## Troubleshooting
+
+SET API VIA USB: repeat step 4 with your generated config. NO WI-FI: start BLE
+setup or use WI-FI / RECONNECT. SYNC FAILED: confirm Mac health/upstream, public
+HTTPS reachability and matching keys. Missing history is not a zero-usage day.
+Long DOWN in settings clears saved Wi-Fi; provision again afterward. Avoid it
+unless deliberately changing networks. Data timestamps use UTC+8; the account
+service does not declare the timezone of its daily buckets.
+
+## Build and validation
+
+Based on the FoloToy AI Passport template (MIT license retained). Use ESP-IDF
+5.5.3 and run `./tools/validate.sh` for the repository gate. Community 0.5.0
+never includes compile-time personal credentials; API settings come from NVS.
+Its merged image flashes at 0x0. Do not use an application-only image at 0x0.
+The personal 0.4.4 base passed device display, networking, wake and navigation
+checks. Community-specific provisioning is host/build tested; no community
+firmware was flashed as part of publication. Preview images use synthetic data.

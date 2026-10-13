@@ -1,0 +1,68 @@
+[English](README.md)
+
+# AI 驾驶舱 / AI Cockpit
+
+把 AI Passport 变成随身 Codex 用量看板。荧光数字、50 天热力图和十格额度条帮助
+观察日常 AI 使用习惯。长按确定进入设置，上／下循环九个信息页。开机默认息屏，
+确定唤醒，30 秒无操作再次息屏；后台仍定时更新。
+
+## 展示内容
+
+近七个完整日期、昨天、上个日历周、上个月、本月至今、本周剩余额度及重置时间、
+累计 Token、7／30／50 天热力图，以及已记录的已结束每周额度峰值。缺失数据显示
+未知。每日预算是周额度的 1/7，其余按日历天数折算。额度变化来自采样，断档可能
+低估；安装前的额度历史无法补齐。Token 数量与会员额度分别统计。
+
+## 首次使用自己的账号
+
+1. 在常驻 Mac 上安装并登录 Codex。后端读取本机 Codex app-server 提供的账号
+   用量和额度接口，不发送对话提示词；你的 Codex 版本和账号需支持这两个接口。
+2. 下载本仓库，进入目录，创建 Python 环境：
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r companion/requirements.txt
+python companion/setup_backend.py --install
+```
+
+最后一条会生成私人设备密钥并安装登录自启动服务。找不到 Codex 时补充
+`--codex /Codex程序的绝对路径`。保留此目录及 Python 环境。服务登录后常驻运行，
+监听 127.0.0.1:18741；本机 `/health` 中 upstream_ready 应为 true。只能有一个后端
+占用该端口。Mac 睡眠或离线时设备无法更新。
+3. 准备自己的可访问 HTTPS 入口，将请求转发至上述本机服务，例如使用 Tunnel。
+   设备地址应以 `/v1/board` 结尾，并可通过手机热点访问。后端已检查生成的密钥。
+   仓库不会自动创建你的域名或 Tunnel。
+4. 先用社区官方烧录工具刷入完整固件，这会重置此前设备设置。然后接上 USB
+   数据线，列出串口并写入自己的接口配置：
+
+```sh
+python -m serial.tools.list_ports -v
+python companion/configure_device.py --url https://你的域名/v1/board --port 设备串口 --confirm-reset-settings
+```
+
+务必选择 AI Passport 的串口。此配置步骤也会重置保存的 Wi-Fi／设置，应先执行
+再手机配网。密钥和配置文件保存在 `.local`，不要上传该目录或分享配置镜像。
+5. 短按确定唤醒，长按确定进入 SETTINGS。上／下选 BLE / START，短按确定。
+   手机使用 EspBlufi App，扫描 BLUFI_CodexBoard 并连接，打开 Wi-Fi 配网，选择
+   Station／STA，输入自己的 2.4GHz Wi-Fi／热点名称（SSID）及密码。iPhone 热点
+   必要时开启“最大兼容性”。成功后设备会重启以释放配网内存，再按确定唤醒。
+   不通过 iPhone 系统蓝牙列表查找设备。
+6. 等待 SYNCED 和 UPD 时间。上／下循环九页；概览页短按确定切换 7／30／50 天，
+   其他信息页短按确定刷新。长按确定进入设置，设置内长按确定返回。设置提供
+   Wi-Fi 重连、5／15／30／60 分钟或手动刷新、蓝牙配网。Mac 每五分钟采样。
+
+## 常见问题
+
+SET API VIA USB：重复第 4 步。NO WI-FI：开启蓝牙配网或选 WI-FI / RECONNECT。
+SYNC FAILED：检查 Mac 上游健康状态、公网 HTTPS 可达性及密钥是否一致。
+缺失历史不是零用量。设置中长按下键会清除 Wi-Fi，仅在明确更换网络时使用。
+更新时间为北京时间；账号服务没有说明每日用量桶的时区。
+
+## 构建及验证
+
+基于 FoloToy AI Passport 模板，保留 MIT 许可证。使用 ESP-IDF 5.5.3，运行
+`./tools/validate.sh` 完成统一验证。社区 0.5.0 不包含编译时私人凭据，从 NVS
+读取自己的接口设置。完整镜像写入 0x0；不能将应用镜像误写至 0x0。
+个人版 0.4.4 已通过显示、联网、唤醒和导航实测；社区配置流程仅做主机及构建
+验证，发布过程中没有烧录设备。预览使用合成数据。
