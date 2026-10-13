@@ -1,49 +1,5 @@
-配套源码：https://github.com/jonwong0882-source/ai-cockpit-ai-passport
-
-下载配套源码后按以下步骤操作。
-## 首次使用自己的账号
-
-1. 在常驻 Mac 上安装并登录 Codex。后端读取本机 Codex app-server 提供的账号
-   用量和额度接口，不发送对话提示词；你的 Codex 版本和账号需支持这两个接口。
-2. 下载本仓库，进入目录，创建 Python 环境：
-
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r companion/requirements.txt
-python companion/setup_backend.py --install
-```
-
-最后一条会生成私人设备密钥并安装登录自启动服务。找不到 Codex 时补充
-`--codex /Codex程序的绝对路径`。保留此目录及 Python 环境。服务登录后常驻运行，
-监听 127.0.0.1:18741；本机 `/health` 中 upstream_ready 应为 true。只能有一个后端
-占用该端口。Mac 睡眠或离线时设备无法更新。
-3. 准备自己的可访问 HTTPS 入口，将请求转发至上述本机服务，例如使用 Tunnel。
-   设备地址应以 `/v1/board` 结尾，并可通过手机热点访问。后端已检查生成的密钥。
-   仓库不会自动创建你的域名或 Tunnel。
-4. 先用社区官方烧录工具刷入完整固件，这会重置此前设备设置。然后接上 USB
-   数据线，列出串口并写入自己的接口配置：
-
-```sh
-python -m serial.tools.list_ports -v
-python companion/configure_device.py --url https://你的域名/v1/board --port 设备串口 --confirm-reset-settings
-```
-
-务必选择 AI Passport 的串口。此配置步骤也会重置保存的 Wi-Fi／设置，应先执行
-再手机配网。密钥和配置文件保存在 `.local`，不要上传该目录或分享配置镜像。
-5. 短按确定唤醒，长按确定进入 SETTINGS。上／下选 BLE / START，短按确定。
-   手机使用 EspBlufi App，扫描 BLUFI_CodexBoard 并连接，打开 Wi-Fi 配网，选择
-   Station／STA，输入自己的 2.4GHz Wi-Fi／热点名称（SSID）及密码。iPhone 热点
-   必要时开启“最大兼容性”。成功后设备会重启以释放配网内存，再按确定唤醒。
-   不通过 iPhone 系统蓝牙列表查找设备。
-6. 等待 SYNCED 和 UPD 时间。上／下循环九页；概览页短按确定切换 7／30／50 天，
-   其他信息页短按确定刷新。长按确定进入设置，设置内长按确定返回。设置提供
-   Wi-Fi 重连、5／15／30／60 分钟或手动刷新、蓝牙配网。Mac 每五分钟采样。
-
-## 常见问题
-
-SET API VIA USB：重复第 4 步。NO WI-FI：开启蓝牙配网或选 WI-FI / RECONNECT。
-SYNC FAILED：检查 Mac 上游健康状态、公网 HTTPS 可达性及密钥是否一致。
-缺失历史不是零用量。设置中长按下键会清除 Wi-Fi，仅在明确更换网络时使用。
-更新时间为北京时间；账号服务没有说明每日用量桶的时区。
-
+1. 下载介绍中的 GitHub 源码，在已登录 Codex 的常驻 Mac 上按 README 安装后端，并准备手机热点也能访问的 HTTPS 接口。
+2. 烧录社区固件后用 USB 接 Mac，按 README 运行配置工具，写入自己的接口地址及密钥。此步骤清除 Wi-Fi 设置，须先做再配网。
+3. 短按确定唤醒，长按进入 SETTINGS；上下选 BLE / START，确定开启。手机 EspBlufi App 扫描 BLUFI_CodexBoard，连接后选 Station/STA，输入 2.4GHz Wi-Fi／热点名称和密码并确认。iPhone 热点必要时开“最大兼容性”。连接成功会重启，再按确定唤醒。
+4. 显示 SYNCED 后，上下循环九页；概览短按确定切换范围，其他页短按刷新，长按进入设置／返回。30 秒无操作自动息屏。
+5. 断网可在设置选 WI-FI / RECONNECT；换网重新开启 BLE 配网。未连上时核对名称、密码并重试。
