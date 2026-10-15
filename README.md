@@ -5,7 +5,7 @@
 Turn AI Passport into a pocket dashboard for your Codex use. Large neon digits,
 a 50-day heatmap and ten-cell quota bars show your daily AI habit. Hold OK for
 settings; arrows cycle nine information pages. The screen starts off, wakes on
-OK and blanks after 30 idle seconds while background sync continues.
+OK and blanks after the chosen idle timeout (30 seconds by default) while background sync continues.
 
 ## What it shows
 
@@ -61,7 +61,11 @@ in `.local`; never upload that directory or share the settings binary.
 6. Wait for SYNCED and UPD. Arrows cycle nine pages; the map's short OK cycles
    7/30/50 days, other information pages short OK syncs. Hold OK opens settings
    and hold OK there returns. Settings offers Wi-Fi reconnect, sync interval
-   (5/15/30/60 minutes or manual), and BLE setup. The Mac samples every 5 minutes.
+   (5/15/30/60 minutes or manual), BLE setup, LIGHT brightness and SLEEP timeout
+   (15/30/60/120/300 seconds or ALWAYS ON). Short OK cycles the selected setting;
+   changes are saved. ALWAYS ON applies after waking; startup still leaves the
+   screen off. The Mac samples every 5 minutes and retries upstream failures
+   after 60 seconds. Display sleep does not stop background sync.
 
 ## Troubleshooting
 
@@ -75,9 +79,13 @@ service does not declare the timezone of its daily buckets.
 ## Build and validation
 
 Based on the FoloToy AI Passport template (MIT license retained). Use ESP-IDF
-5.5.3 and run `./tools/validate.sh` for the repository gate. Community 0.5.0
+5.5.3 and run `./tools/validate.sh` for the repository gate. Community 0.5.1
 never includes compile-time personal credentials; API settings come from NVS.
 Its merged image flashes at 0x0. Do not use an application-only image at 0x0.
-The personal 0.4.4 base passed device display, networking, wake and navigation
-checks. Community-specific provisioning is host/build tested; no community
-firmware was flashed as part of publication. Preview images use synthetic data.
+The personal 0.4.8 implementation passed device startup, fresh-data sync,
+request merging, five-row settings and 15-second sleep acceptance. Intermittent
+TLS timeouts remain possible; retries can recover. Community-specific NVS
+provisioning and the 0.5.1 firmware have host/build validation, not a new
+community-device flash. Preview images use synthetic data.
+
+See [0.5.1 release notes](docs/ai-cockpit-0.5.1.md) for changes and validation.

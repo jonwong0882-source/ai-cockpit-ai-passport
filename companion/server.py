@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -192,13 +193,18 @@ class Store:
         self.quota_records=records
         board['completion']=quota_completion(records,now)
     def refresh(self):
+        stage = "codex_query"
         try:
             usage, limits = rpc_snapshot(self.config['codex_binary'])
+            stage = "board_conversion"
             board = make_board(usage, limits, self.config.get('goals', {}))
+            stage = "quota_history_write"
             self.record_quota(board)
+            stage = "quota_daily_write"
             self.record_daily(board)
             with self.lock: self.data = board; self.error = None
-        except Exception:
+        except Exception as exc:
+            print(f"Refresh failed: stage={stage} error={type(exc).__name__}", file=sys.stderr, flush=True)
             with self.lock: self.error = 'upstream_unavailable'
     def view(self):
         with self.lock:
@@ -211,7 +217,9 @@ class Store:
     def loop(self):
         while True:
             self.refresh()
-            time.sleep(300)
+            # Recover transient upstream failures sooner, without changing the normal cadence.
+            with self.lock: failed = self.error is not None
+            time.sleep(60 if failed else 300)
 
 
 def handler(store):
@@ -240,6 +248,7 @@ def main():
     p.add_argument('--config', type=Path, default=ROOT/'.local/server.json')
     p.add_argument('--once', action='store_true')
     args = p.parse_args()
+    args.config = args.config.resolve(strict=True)
     config = json.loads(args.config.read_text())
     if len(config.get('device_key', '')) < 32: raise SystemExit('Missing device key')
     config.setdefault('quota_history_file',str(args.config.with_name('quota-history.json')))

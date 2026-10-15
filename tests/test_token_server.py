@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer
@@ -14,6 +15,15 @@ server = importlib.util.module_from_spec(spec); spec.loader.exec_module(server)
 
 
 class BoardTests(unittest.TestCase):
+    def test_retry_cadence_and_recovery(self):
+        store=server.Store({'device_key':'a'*40})
+        for error,seconds in [('upstream_unavailable',60),(None,300)]:
+            def refresh():
+                store.error=error
+            with patch.object(store,'refresh',side_effect=refresh), patch.object(server.time,'sleep',side_effect=StopIteration) as sleep:
+                with self.assertRaises(StopIteration): store.loop()
+                sleep.assert_called_once_with(seconds)
+
     def test_calendar_boundaries(self):
         periods = server.periods(dt.date(2026, 3, 1))
         self.assertEqual(periods[3], (dt.date(2026, 2, 1), dt.date(2026, 2, 28)))

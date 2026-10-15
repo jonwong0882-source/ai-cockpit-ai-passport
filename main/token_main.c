@@ -5,9 +5,15 @@
 #include "token_wifi.h"
 #include "token_model.h"
 #include "token_ui_logic.h"
+#include "token_endpoint.h"
+#include "token_transfer.h"
+#include "token_updates.h"
+#include "lwip/netdb.h"
+#include "lwip/inet.h"
 #include "lvgl.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_tls_errors.h"
 #include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -21,15 +27,18 @@
 #include <string.h>
 #include <time.h>
 #include <inttypes.h>
-/* Community builds never include personal compile-time credentials. */
+/* Community builds only use user-configured NVS credentials. */
 static char api_url[256];
 static char api_key[81];
 LV_FONT_DECLARE(token_digits_active);
 LV_FONT_DECLARE(token_digits_dim);
+LV_FONT_DECLARE(token_digits_light);
+LV_FONT_DECLARE(token_digits_shade);
 static const char *TAG = "token_board";
 typedef struct { bsp_btn_t button; bsp_btn_ev_t event; } token_key_event_t;
 typedef struct { token_board_t board; int status; } update_t;
-static QueueHandle_t keys, updates;
+static QueueHandle_t keys;
+static token_updates_t network_updates;
 static TaskHandle_t net_task;
 static token_board_t data;
 static bool have_data, editing, pairing, cached;
@@ -38,13 +47,17 @@ static int64_t received_us, pair_deadline;
 static uint64_t targets[5], edit_target;
 static token_power_t screen_power;
 static int settings_selection, return_page;
-enum { NET_REFRESH=1, NET_RECONNECT=2 };
+static uint32_t brightness = TOKEN_BRIGHTNESS_DEFAULT;
+#define SETTINGS_COUNT 5
+static uint32_t sleep_seconds=TOKEN_IDLE_MS/1000;
+enum { NET_REFRESH=TOKEN_NET_REFRESH, NET_RECONNECT=TOKEN_NET_RECONNECT, NET_RESCHEDULE=TOKEN_NET_RESCHEDULE };
 static volatile uint32_t interval = 15;
 static const uint32_t intervals[] = {5, 15, 30, 60, 0};
-#define GREEN 0x00FFD0
-#define DIM_GREEN 0x259D8E
-#define INACTIVE_GREEN 0x103831
-static lv_obj_t *title, *number, *detail, *goal, *footer, *power, *bar, *unit_label, *updated_at, *settings_rows[3];
+#define GREEN 0x2DDDBB
+#define DIM_GREEN 0x328C7A
+#define INACTIVE_GREEN 0x081C17
+#define BACKGROUND 0x010403
+static lv_obj_t *title, *number, *detail, *goal, *footer, *power, *bar, *unit_label, *updated_at, *settings_rows[SETTINGS_COUNT];
 static lv_obj_t *heatmap, *overview_stats, *overview_dates, *overview_legend, *middle_line;
 static lv_obj_t *completion_panel, *period_dates, *period_coverage, *period_latest;
 static char completion_text[5][32];
@@ -66,7 +79,10 @@ static void digit_draw(lv_event_t *e) {
     lv_obj_t *o=lv_event_get_target_obj(e);lv_area_t a;lv_obj_get_coords(o,&a);
     lv_layer_t *layer=lv_event_get_layer(e);lv_draw_label_dsc_t d;lv_draw_label_dsc_init(&d);
     d.text=digits;d.align=LV_TEXT_ALIGN_CENTER;d.font=&token_digits_dim;d.color=lv_color_hex(INACTIVE_GREEN);
-    lv_draw_label(layer,&d,&a);d.font=&token_digits_active;d.color=lv_color_hex(GREEN);lv_draw_label(layer,&d,&a);
+    lv_draw_label(layer,&d,&a);
+    d.font=&token_digits_active;d.color=lv_color_hex(GREEN);lv_draw_label(layer,&d,&a);
+    d.font=&token_digits_shade;d.color=lv_color_hex(0x16806C);lv_draw_label(layer,&d,&a);
+    d.font=&token_digits_light;d.color=lv_color_hex(0x8FEAD4);lv_draw_label(layer,&d,&a);
 }
 static void progress_draw(lv_event_t *e) {
     lv_obj_t *o=lv_event_get_target_obj(e);lv_area_t a;lv_obj_get_coords(o,&a);
@@ -122,12 +138,23 @@ static lv_obj_t *pixel_label(lv_obj_t *parent,int x,int y,int width) {
     lv_obj_t *o=label(parent,x,y,width);lv_obj_set_style_text_font(o,&lv_font_unscii_8,0);return o;
 }
 static const char *connection_text(void) {
-    if(pairing) return "BLE SETUP";
     if(!api_url[0] || !api_key[0]) return "SET API VIA USB";
+    if(pairing) return "BLE SETUP";
     if(network_status==5) return "SET UP WI-FI";
     if(!token_wifi_ready()) return network_status==6 ? "CONNECTING" : have_data ? "OFFLINE" : "NO WI-FI";
     if(network_status==1) return "SYNCING";
     if(network_status==2) return "SYNC FAILED";
+    switch(network_status) {
+        case TOKEN_FETCH_TLS:return "TLS RETRY";
+        case TOKEN_FETCH_DNS:return "DNS RETRY";
+        case TOKEN_FETCH_HTTP:return "API RETRY";
+        case TOKEN_FETCH_AUTH:return "CHECK KEY";
+        case TOKEN_FETCH_BODY:return "RX RETRY";
+        case TOKEN_FETCH_FORMAT:return "BAD DATA";
+        case TOKEN_FETCH_MEMORY:return "LOW MEMORY";
+        case TOKEN_FETCH_CONFIG:return "SET API KEY";
+        default:break;
+    }
     if(network_status==3) return "SYNC CLOCK";
     if(network_status==4) return "BLE ACTIVE";
     if(have_data && (cached || data.stale || (esp_timer_get_time()-received_us)/1000000+data.now-data.fetched>1800)) return "CACHED";
@@ -137,7 +164,7 @@ static void draw(void) {
     char text[160],value[16],unit[24];int progress=0;
     lv_label_set_text(title,names[page]);
     if(battery<0) lv_label_set_text(power,"--");else lv_label_set_text_fmt(power,"%d%%",battery);
-    for(int i=0;i<3;i++) {
+    for(int i=0;i<SETTINGS_COUNT;i++) {
         if(page==7) lv_obj_remove_flag(settings_rows[i],LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(settings_rows[i],LV_OBJ_FLAG_HIDDEN);
     }
@@ -220,14 +247,19 @@ static void draw(void) {
         }
         lv_obj_invalidate(completion_panel);
     } else {
-        if(interval) snprintf(value,sizeof(value),"%lu",(unsigned long)interval);
-        lv_label_set_text(unit_label,interval?"MIN / AUTO REFRESH":"MANUAL / AUTO REFRESH OFF");
+        if(settings_selection==4) snprintf(value,sizeof(value),sleep_seconds?"%lu":"--",(unsigned long)sleep_seconds);
+        else if(settings_selection==3) snprintf(value,sizeof(value),"%lu",(unsigned long)brightness);
+        else if(interval) snprintf(value,sizeof(value),"%lu",(unsigned long)interval);
+        lv_label_set_text(unit_label,settings_selection==4?(sleep_seconds?"SEC / SCREEN SLEEP":"SCREEN / ALWAYS ON"):settings_selection==3?"LIGHT / BRIGHTNESS %":interval?"MIN / AUTO REFRESH":"MANUAL / AUTO REFRESH OFF");
         lv_label_set_text(settings_rows[0],token_wifi_ready()?"WI-FI / CONNECTED":"WI-FI / RECONNECT");
         if(interval) lv_label_set_text_fmt(settings_rows[1],"SYNC / %lu MIN",(unsigned long)interval);
         else lv_label_set_text(settings_rows[1],"SYNC / MANUAL");
         lv_label_set_text(settings_rows[2],pairing?"BLE / ON":"BLE / START");
-        for(int i=0;i<3;i++) {
-            lv_obj_set_style_bg_color(settings_rows[i],lv_color_hex(i==settings_selection?0x124C44:0x0D0F1B),0);
+        lv_label_set_text_fmt(settings_rows[3],"LIGHT / %lu%%",(unsigned long)brightness);
+        if(sleep_seconds) lv_label_set_text_fmt(settings_rows[4],"SLEEP / %lu SEC",(unsigned long)sleep_seconds);
+        else lv_label_set_text(settings_rows[4],"SLEEP / ALWAYS ON");
+        for(int i=0;i<SETTINGS_COUNT;i++) {
+            lv_obj_set_style_bg_color(settings_rows[i],lv_color_hex(i==settings_selection?0x0C3027:BACKGROUND),0);
             lv_obj_set_style_border_color(settings_rows[i],lv_color_hex(i==settings_selection?GREEN:DIM_GREEN),0);
         }
     }
@@ -241,7 +273,7 @@ static void draw(void) {
     } else lv_label_set_text(updated_at,"UPD --/-- --:--");
 }
 static void ui_create(void) {
-    lv_obj_t *screen=lv_obj_create(NULL);lv_obj_set_style_bg_color(screen,lv_color_hex(0x0D0F1B),0);
+    lv_obj_t *screen=lv_obj_create(NULL);lv_obj_set_style_bg_color(screen,lv_color_hex(BACKGROUND),0);
     lv_obj_set_style_pad_all(screen,0,0);lv_obj_remove_flag(screen,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *header=pixel_label(screen,10,12,175);lv_label_set_text(header,"AI COCKPIT");
     power=pixel_label(screen,198,12,32);
@@ -256,8 +288,8 @@ static void ui_create(void) {
     unit_label=pixel_label(screen,10,153,220);lv_obj_set_style_text_align(unit_label,LV_TEXT_ALIGN_CENTER,0);
     detail=label(screen,10,176,220);goal=label(screen,10,222,220);
     lv_obj_set_style_text_color(detail,lv_color_hex(DIM_GREEN),0);
-    for(int i=0;i<3;i++) {
-        settings_rows[i]=label(screen,10,176+i*29,220);lv_obj_set_height(settings_rows[i],25);
+    for(int i=0;i<SETTINGS_COUNT;i++) {
+        settings_rows[i]=label(screen,10,174+i*20,220);lv_obj_set_height(settings_rows[i],19);
         lv_obj_set_style_bg_opa(settings_rows[i],LV_OPA_COVER,0);lv_obj_set_style_border_width(settings_rows[i],1,0);
         lv_obj_set_style_pad_left(settings_rows[i],5,0);lv_obj_set_style_pad_top(settings_rows[i],2,0);
     }
@@ -293,37 +325,120 @@ static void screen_set_awake(bool awake) {
     esp_err_t err=esp_lcd_panel_disp_on_off(bsp_display_panel(),awake);
     bsp_lvgl_unlock();
     if(err!=ESP_OK) ESP_LOGW(TAG,"Panel state failed: %s",esp_err_to_name(err));
-    if(awake) bsp_display_backlight(60);
+    if(awake) bsp_display_backlight(brightness);
     ESP_LOGI(TAG,"Screen %s",awake?"ON":"OFF");
 }
-static bool fetch(token_board_t *out) {
-    if (!api_key[0] || time(NULL) < 1735689600) return false;
-    esp_http_client_config_t cfg = {.url=api_url, .timeout_ms=12000,
-        .user_agent="AICockpit/0.5.0", .crt_bundle_attach=esp_crt_bundle_attach, .disable_auto_redirect=true, .buffer_size=1024};
-    esp_http_client_handle_t h = esp_http_client_init(&cfg);
-    if (!h) return false;
-    char auth[128]; snprintf(auth, sizeof(auth), "Bearer %s", api_key);
-    esp_http_client_set_header(h, "Authorization", auth);
-    bool ok = false;
-    static char buffer[6144];
-    ESP_LOGI(TAG, "HTTPS heap: free=%u largest=%u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    esp_err_t open_err = esp_http_client_open(h, 0);
-    if (open_err == ESP_OK) {
-        esp_http_client_fetch_headers(h);
-        ESP_LOGI(TAG, "HTTPS status=%d", esp_http_client_get_status_code(h));
-        if (esp_http_client_get_status_code(h) == 200) {
-            size_t used = 0; int n = 0;
-            while (used < sizeof(buffer)-1 && (n=esp_http_client_read(h, buffer+used, sizeof(buffer)-1-used)) > 0) used += n;
-            buffer[used] = 0;
-            if (n >= 0 && esp_http_client_is_complete_data_received(h)) ok = token_board_parse(buffer, out);
+/* Owned exclusively by network_worker. Retain TLS only for nearby refreshes. */
+static esp_http_client_handle_t http_client;
+static char http_address[INET_ADDRSTRLEN];
+static token_endpoint_t http_endpoint;
+static int64_t http_last_ms;
+static token_transfer_t transfer;
+static void http_release(void) {
+    if(http_client) esp_http_client_cleanup(http_client);
+    http_client=NULL;
+}
+static esp_err_t http_event(esp_http_client_event_t *event) {
+    int64_t now=esp_timer_get_time()/1000;
+    if(event->event_id==HTTP_EVENT_ON_CONNECTED) transfer.connected_ms=now;
+    if(event->event_id==HTTP_EVENT_HEADERS_SENT) transfer.sent_ms=now;
+    if((event->event_id==HTTP_EVENT_ON_HEADER || event->event_id==HTTP_EVENT_ON_DATA) && !transfer.first_ms)
+        transfer.first_ms=now;
+    if(event->event_id==HTTP_EVENT_ON_DATA && event->data_len>0)
+        token_transfer_data(&transfer,event->data,(size_t)event->data_len);
+    /* After connect use a shorter read timeout, tightened as the budget expires. */
+    if(event->event_id==HTTP_EVENT_ON_CONNECTED || event->event_id==HTTP_EVENT_HEADERS_SENT ||
+       event->event_id==HTTP_EVENT_ON_HEADER || event->event_id==HTTP_EVENT_ON_DATA)
+        esp_http_client_set_timeout_ms(event->client,token_transfer_timeout(&transfer,now));
+    return ESP_OK;
+}
+static int fetch_address(token_board_t *out,const token_endpoint_t *endpoint,const char *address) {
+    int64_t started=esp_timer_get_time()/1000;
+    bool reuse=http_client && token_transfer_reusable(http_last_ms,started,
+        !strcmp(http_address,address) && !strcmp(http_endpoint.host,endpoint->host) &&
+        !strcmp(http_endpoint.path,endpoint->path) && http_endpoint.port==endpoint->port);
+    if(!reuse) http_release();
+    token_transfer_start(&transfer,started);
+    if(!http_client) {
+        /* Config pointers remain valid throughout retained client lifetime. */
+        http_endpoint=*endpoint;snprintf(http_address,sizeof(http_address),"%s",address);
+        esp_http_client_config_t cfg={.host=http_address,.path=http_endpoint.path,.port=http_endpoint.port,
+            .transport_type=HTTP_TRANSPORT_OVER_SSL,.common_name=http_endpoint.host,
+            .timeout_ms=TOKEN_CONNECT_TIMEOUT_MS,.user_agent="AICockpit/0.5.1",
+            .crt_bundle_attach=esp_crt_bundle_attach,.tls_version=ESP_HTTP_CLIENT_TLS_VER_TLS_1_2,
+            .addr_type=HTTP_ADDR_TYPE_INET,.disable_auto_redirect=true,.max_authorization_retries=-1,
+            .buffer_size=1024,.event_handler=http_event};
+        http_client=esp_http_client_init(&cfg);
+        if(!http_client) return TOKEN_FETCH_MEMORY;
+        char auth[128];snprintf(auth,sizeof(auth),"Bearer %s",api_key);
+        char authority[144];
+        if(endpoint->port==443) snprintf(authority,sizeof(authority),"%s",endpoint->host);
+        else snprintf(authority,sizeof(authority),"%s:%u",endpoint->host,endpoint->port);
+        if(esp_http_client_set_header(http_client,"Authorization",auth)!=ESP_OK ||
+           esp_http_client_set_header(http_client,"Host",authority)!=ESP_OK) {
+            http_release();return TOKEN_FETCH_MEMORY;
         }
-        esp_http_client_close(h);
-    } else {
-        ESP_LOGW(TAG, "HTTPS open failed: %s", esp_err_to_name(open_err));
     }
-    ESP_LOGI(TAG, "HTTPS payload validation=%s", ok ? "PASS" : "FAIL");
-    esp_http_client_cleanup(h); return ok;
+    /* perform() resets the HTTP parser and handles the keep-alive state. */
+    esp_http_client_set_timeout_ms(http_client,TOKEN_CONNECT_TIMEOUT_MS);
+    ESP_LOGI(TAG,"HTTPS edge=%s host=%s reuse_candidate=%d",address,endpoint->host,reuse);
+    esp_err_t err=esp_http_client_perform(http_client);
+    int status=esp_http_client_get_status_code(http_client),outcome;
+    bool complete=err==ESP_OK && !transfer.overflow && esp_http_client_is_complete_data_received(http_client);
+    if(err!=ESP_OK) {
+        int code=0,flags=0;
+        esp_err_t tls=esp_http_client_get_and_clear_last_tls_error(http_client,&code,&flags);
+        outcome=transfer.sent_ms?TOKEN_FETCH_BODY:TOKEN_FETCH_TLS;
+        ESP_LOGW(TAG,"HTTPS failed: %s tls=0x%x code=%d flags=0x%x errno=%d",
+                 esp_err_to_name(err),(unsigned)tls,code,(unsigned)flags,esp_http_client_get_errno(http_client));
+    } else if(status==401) outcome=TOKEN_FETCH_AUTH;
+    else if(status!=200) outcome=TOKEN_FETCH_HTTP;
+    else if(!complete) outcome=TOKEN_FETCH_BODY;
+    else outcome=token_board_parse(transfer.body,out)?TOKEN_FETCH_OK:TOKEN_FETCH_FORMAT;
+    int64_t finished=esp_timer_get_time()/1000;
+    ESP_LOGI(TAG,"HTTPS status=%d bytes=%u complete=%d outcome=%d total_ms=%lld connect_ms=%lld first_header_ms=%lld body_ms=%lld",
+        status,(unsigned)transfer.used,complete,outcome,(long long)(finished-started),
+        (long long)(transfer.connected_ms?transfer.connected_ms-started:-1),
+        (long long)(transfer.first_ms && transfer.sent_ms?transfer.first_ms-transfer.sent_ms:-1),
+        (long long)(transfer.first_ms?finished-transfer.first_ms:-1));
+    if(outcome==TOKEN_FETCH_OK) {
+        ESP_LOGI(TAG,"Board freshness: stale=%d age_seconds=%lld",out->stale,(long long)(out->now-out->fetched));
+        http_last_ms=finished;
+    } else http_release();
+    return outcome;
+}
+static int fetch(token_board_t *out) {
+    if(!api_key[0]) return TOKEN_FETCH_CONFIG;
+    token_endpoint_t endpoint;
+    if(!token_endpoint_parse_https(api_url,&endpoint)) return TOKEN_FETCH_CONFIG;
+    struct addrinfo hints={.ai_family=AF_INET,.ai_socktype=SOCK_STREAM},*result=NULL;
+    int error=getaddrinfo(endpoint.host,NULL,&hints,&result);
+    if(error || !result) {ESP_LOGW(TAG,"DNS IPv4 lookup failed: %d",error);return TOKEN_FETCH_DNS;}
+    uint32_t addresses[2];unsigned count=0;
+    for(struct addrinfo *item=result;item && count<2;item=item->ai_next) {
+        if(item->ai_family!=AF_INET) continue;
+        uint32_t address=((struct sockaddr_in *)item->ai_addr)->sin_addr.s_addr;
+        if(!count || addresses[0]!=address) addresses[count++]=address;
+    }
+    freeaddrinfo(result);
+    if(!count) return TOKEN_FETCH_DNS;
+    static uint32_t preferred;
+    unsigned start=token_endpoint_pick(addresses,count,preferred);
+    ESP_LOGI(TAG,"DNS IPv4 candidates=%u preferred_index=%u",count,start);
+    int outcome=TOKEN_FETCH_TLS;
+    for(unsigned i=0;i<count;i++) {
+        if(!token_wifi_ready() || !token_wifi_https_allowed()) break;
+        uint32_t selected=addresses[(start+i)%count];struct in_addr address={.s_addr=selected};
+        char text[INET_ADDRSTRLEN];
+        if(!inet_ntop(AF_INET,&address,text,sizeof(text))) continue;
+        outcome=fetch_address(out,&endpoint,text);
+        if(outcome==TOKEN_FETCH_OK) {preferred=selected;break;}
+        if(outcome!=TOKEN_FETCH_TLS && outcome!=TOKEN_FETCH_BODY) break;
+    }
+    return outcome;
+}
+static void publish_update(const update_t *update) {
+    token_updates_publish(&network_updates,update->status,&update->board);
 }
 static void network_worker(void *arg) {
     (void)arg;
@@ -332,17 +447,23 @@ static void network_worker(void *arg) {
     bool sntp_started = false;
     esp_err_t ntp_error = esp_netif_sntp_init(&sntp);
     int64_t due = 0;
+    unsigned failures=0;
     for (;;) {
         uint32_t request=0;
         xTaskNotifyWait(0,UINT32_MAX,&request,pdMS_TO_TICKS(1000));
         int64_t now = esp_timer_get_time()/1000000;
+        if(http_client && (!token_wifi_ready() || !token_wifi_https_allowed() ||
+           !token_transfer_reusable(http_last_ms,esp_timer_get_time()/1000,true))) {
+            http_release();token_wifi_https_busy(false);
+        }
         if(request&NET_RECONNECT) {
+            http_release();token_wifi_https_busy(false);
             esp_err_t err=token_wifi_reconnect();
-            update_t update={.status=err==ESP_OK?6:5};xQueueOverwrite(updates,&update);
+            update_t update={.status=err==ESP_OK?6:5};publish_update(&update);
             due=0;
         }
         if (!token_wifi_https_allowed()) {
-            update_t update = {.status=4}; xQueueOverwrite(updates, &update); continue;
+            update_t update = {.status=4}; publish_update(&update); continue;
         }
         if (!token_wifi_ready()) {
             if (now%15 == 0) token_wifi_retry();
@@ -352,16 +473,29 @@ static void network_worker(void *arg) {
             sntp_started = esp_netif_sntp_start() == ESP_OK;
         }
         if (time(NULL) < 1735689600) {
-            update_t update = {.status=3}; xQueueOverwrite(updates, &update); continue;
+            update_t update = {.status=3}; publish_update(&update); continue;
+        }
+        if(request&NET_RESCHEDULE) {
+            uint32_t seconds=token_sync_delay(interval,failures);
+            due=seconds?now+seconds:INT64_MAX;
         }
         if (!(request&NET_REFRESH) && now < due) continue;
-        update_t update = {.status=1}; xQueueOverwrite(updates, &update);
+        update_t update = {.status=1}; publish_update(&update);
         token_wifi_https_busy(true);
-        update.status = fetch(&update.board) ? 0 : 2;
-        token_wifi_https_busy(false);
-        xQueueOverwrite(updates, &update);
-        uint32_t minutes = interval;
-        due = now + (minutes ? minutes*60 : INT32_MAX);
+        update.status = fetch(&update.board);
+        /* BLE startup waits until retained TLS memory has been released. */
+        token_wifi_https_busy(http_client!=NULL);
+        publish_update(&update);
+        /* Merge refresh presses made during this request; preserve reconnect and
+           interval changes so user settings cannot be lost at completion. */
+        uint32_t pending=ulTaskNotifyValueClear(NULL,NET_REFRESH);
+        if(pending & ~token_sync_pending_after_fetch(pending)) ESP_LOGI(TAG,"Merged pending refresh");
+        failures=token_sync_failure_count(failures,update.status==TOKEN_FETCH_OK,
+                                          update.status==TOKEN_FETCH_OK && update.board.stale);
+        uint32_t seconds=token_sync_delay(interval,failures);
+        due=seconds?esp_timer_get_time()/1000000+seconds:INT64_MAX;
+        ESP_LOGI(TAG,"Sync scheduled: failures=%u delay_seconds=%lu manual=%d",failures,
+                 (unsigned long)seconds,seconds==0);
     }
 }
 static void key_callback(bsp_btn_t button, bsp_btn_ev_t event, void *user) {
@@ -373,6 +507,8 @@ static void save_preferences(void) {
     if (nvs_open("token_board", NVS_READWRITE, &h) != ESP_OK) return;
     esp_err_t err = nvs_set_blob(h, "targets", targets, sizeof(targets));
     if (err == ESP_OK) err = nvs_set_u32(h, "interval", interval);
+    if (err == ESP_OK) err = nvs_set_u32(h, "brightness", brightness);
+    if (err == ESP_OK) err = nvs_set_u32(h, "sleep_sec", sleep_seconds);
     if (err == ESP_OK) err = nvs_commit(h);
     if (err != ESP_OK) ESP_LOGW(TAG, "Preferences not saved: %s", esp_err_to_name(err));
     nvs_close(h);
@@ -391,15 +527,23 @@ static void process_key(token_key_event_t key) {
             token_wifi_clear();pairing=true;pair_deadline=esp_timer_get_time()+300000000;token_wifi_pair(true);return;
         }
         if(key.event!=BSP_BTN_CLICK) return;
-        if(key.button==BSP_BTN_UP) settings_selection=(settings_selection+2)%3;
-        else if(key.button==BSP_BTN_DOWN) settings_selection=(settings_selection+1)%3;
+        if(key.button==BSP_BTN_UP) settings_selection=(settings_selection+SETTINGS_COUNT-1)%SETTINGS_COUNT;
+        else if(key.button==BSP_BTN_DOWN) settings_selection=(settings_selection+1)%SETTINGS_COUNT;
         else if(key.button==BSP_BTN_OK) {
             if(settings_selection==0) xTaskNotify(net_task,NET_RECONNECT|NET_REFRESH,eSetBits);
             else if(settings_selection==1) {
                 for(unsigned i=0;i<5;i++) if(interval==intervals[i]) {interval=intervals[(i+1)%5];break;}
-                save_preferences();xTaskNotify(net_task,NET_REFRESH,eSetBits);
-            } else {
+                save_preferences();xTaskNotify(net_task,NET_RESCHEDULE,eSetBits);
+            } else if(settings_selection==2) {
                 pairing=!pairing;pair_deadline=esp_timer_get_time()+300000000;token_wifi_pair(pairing);
+            } else if(settings_selection==3) {
+                brightness=token_brightness_next(brightness);
+                if(screen_power.awake) bsp_display_backlight(brightness);
+                save_preferences();
+            } else {
+                sleep_seconds=token_sleep_next(sleep_seconds);
+                token_power_set_sleep(&screen_power,sleep_seconds);
+                save_preferences();
             }
         }
         return;
@@ -418,7 +562,7 @@ static void process_key(token_key_event_t key) {
     } else if(key.button==BSP_BTN_OK) xTaskNotify(net_task,NET_REFRESH,eSetBits);
 }
 void app_main(void) {
-    ESP_LOGI(TAG, "AI Cockpit 0.5.0 Community");
+    ESP_LOGI(TAG, "AI Cockpit 0.5.1");
     ESP_ERROR_CHECK(bsp_i2c_init());
     ESP_ERROR_CHECK(bsp_display_init());
     bsp_display_backlight(0);
@@ -439,13 +583,18 @@ void app_main(void) {
         size_t size=sizeof(targets); nvs_get_blob(h, "targets", targets, &size);
         uint32_t minutes;
         if (nvs_get_u32(h,"interval",&minutes)==ESP_OK) for (unsigned i=0;i<5;i++) if (minutes==intervals[i]) interval=minutes;
+        uint32_t stored_brightness;
+        if(nvs_get_u32(h,"brightness",&stored_brightness)==ESP_OK && token_brightness_valid(stored_brightness)) brightness=stored_brightness;
+        uint32_t stored_sleep;
+        if(nvs_get_u32(h,"sleep_sec",&stored_sleep)==ESP_OK && token_sleep_valid(stored_sleep)) sleep_seconds=stored_sleep;
         size=0;
         if (nvs_get_blob(h,"snapshot",NULL,&size)==ESP_OK && size==sizeof(data) &&
             nvs_get_blob(h,"snapshot",&data,&size)==ESP_OK) { have_data=true; cached=true; }
         nvs_close(h);
     }
-    keys=xQueueCreate(8,sizeof(token_key_event_t)); updates=xQueueCreate(1,sizeof(update_t));
-    if (!keys || !updates) { ESP_LOGE(TAG,"Queue allocation failed"); return; }
+    token_power_set_sleep(&screen_power,sleep_seconds);
+    keys=xQueueCreate(8,sizeof(token_key_event_t));
+    if (!keys || !token_updates_init(&network_updates)) { ESP_LOGE(TAG,"Queue allocation failed"); return; }
     if (!bsp_lvgl_lock(1000)) return;
     ui_create(); draw(); bsp_lvgl_unlock();
     screen_set_awake(false);
@@ -453,20 +602,18 @@ void app_main(void) {
     ESP_ERROR_CHECK(bsp_button_init(key_callback,NULL));
     int64_t last_battery=0,last_draw=0;
     for (;;) {
-        token_key_event_t key; update_t update;
+        token_key_event_t key;
         bool dirty=false;
         if (xQueueReceive(keys,&key,pdMS_TO_TICKS(200))) {process_key(key);dirty=true;}
-        if (xQueueReceive(updates,&update,0)) {
+        if (token_updates_take_board(&network_updates,&data)) {
             dirty=true;
-            network_status=update.status;
-            if (update.status==0) {
-                data=update.board; have_data=true; cached=false; received_us=esp_timer_get_time();
-                if (nvs_open("token_board",NVS_READWRITE,&h)==ESP_OK) {
-                    if (nvs_set_blob(h,"snapshot",&data,sizeof(data))==ESP_OK) nvs_commit(h);
-                    nvs_close(h);
-                }
+            have_data=true;cached=false;received_us=esp_timer_get_time();
+            if (nvs_open("token_board",NVS_READWRITE,&h)==ESP_OK) {
+                if (nvs_set_blob(h,"snapshot",&data,sizeof(data))==ESP_OK) nvs_commit(h);
+                nvs_close(h);
             }
         }
+        if(token_updates_take_status(&network_updates,&network_status)) dirty=true;
         int64_t now=esp_timer_get_time();
         token_wifi_poll();
         if (pairing && now>pair_deadline) { token_wifi_pair(false); pairing=false; }

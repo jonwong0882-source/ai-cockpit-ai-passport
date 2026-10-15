@@ -3,6 +3,26 @@
 #include <stdio.h>
 #include <string.h>
 int main(void) {
+    assert(token_brightness_valid(TOKEN_BRIGHTNESS_DEFAULT));
+    assert(!token_brightness_valid(0) && !token_brightness_valid(101));
+    assert(token_brightness_next(100)==10 && token_brightness_next(999)==35);
+    uint32_t level=35;unsigned levels=0;
+    do {assert(token_brightness_valid(level));level=token_brightness_next(level);levels++;} while(level!=35 && levels<7);
+    assert(levels==6 && level==35);
+    assert(token_sync_delay(30,0)==1800);
+    assert(token_sync_delay(30,1)==30 && token_sync_delay(30,2)==60);
+    assert(token_sync_delay(30,3)==120 && token_sync_delay(30,4)==300);
+    assert(token_sync_delay(30,1000)==300);
+    assert(token_sync_delay(30,0)==1800); /* A successful refresh restores cadence. */
+    assert(token_sync_delay(0,0)==0 && token_sync_delay(0,5)==0);
+    assert(token_sync_delay(UINT32_MAX,0)==UINT32_MAX);
+    unsigned failures=token_sync_failure_count(0,true,true);
+    assert(failures==1 && token_sync_delay(30,failures)==30); /* Valid but stale API data needs a fresh-data retry. */
+    failures=token_sync_failure_count(failures,false,false);
+    assert(failures==2 && token_sync_delay(30,failures)==60);
+    failures=token_sync_failure_count(failures,true,false);
+    assert(failures==0 && token_sync_delay(30,failures)==1800);
+    assert(token_sync_failure_count(99,false,false)==4);
     token_power_t p; token_power_init(&p);
     assert(!p.awake);
     assert(token_power_input(&p,false,10)==TOKEN_INPUT_IGNORE);
@@ -16,6 +36,22 @@ int main(void) {
     assert(!token_power_tick(&p,90000));
     assert(token_power_input(&p,false,90001)==TOKEN_INPUT_IGNORE);
     assert(token_power_input(&p,true,90002)==TOKEN_INPUT_WAKE);
+    assert(token_sleep_valid(0) && token_sleep_valid(30) && !token_sleep_valid(1));
+    uint32_t sleep=30; unsigned sleep_count=0;
+    do {assert(token_sleep_valid(sleep));sleep=token_sleep_next(sleep);sleep_count++;} while(sleep!=30 && sleep_count<7);
+    assert(sleep_count==6 && token_sleep_next(999)==30);
+    token_power_set_sleep(&p,15);
+    assert(!token_power_tick(&p,105001) && token_power_tick(&p,105002));
+    assert(token_power_input(&p,true,110000)==TOKEN_INPUT_WAKE);
+    token_power_set_sleep(&p,0);
+    assert(!token_power_tick(&p,UINT64_C(1000000000)) && p.awake);
+    token_power_set_sleep(&p,300);
+    assert(!token_power_tick(&p,409999) && token_power_tick(&p,410000));
+    token_power_set_sleep(&p,999);
+    assert(p.idle_ms==TOKEN_IDLE_MS);
+    assert(token_sync_pending_after_fetch(TOKEN_NET_REFRESH)==0);
+    assert(token_sync_pending_after_fetch(TOKEN_NET_REFRESH|TOKEN_NET_RECONNECT|TOKEN_NET_RESCHEDULE)==
+           (TOKEN_NET_RECONNECT|TOKEN_NET_RESCHEDULE));
     char number[16],unit[16];
     token_format_value(0,number,sizeof(number),unit,sizeof(unit));assert(!strcmp(number,"0"));
     token_format_value(236383367,number,sizeof(number),unit,sizeof(unit));assert(!strcmp(number,"236.4") && !strcmp(unit,"M TOKENS"));

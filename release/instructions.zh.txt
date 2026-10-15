@@ -1,5 +1,5 @@
-1. 下载介绍中的 GitHub 源码，在已登录 Codex 的常驻 Mac 上按 README 安装后端，并准备手机热点也能访问的 HTTPS 接口。
-2. 烧录社区固件后用 USB 接 Mac，按 README 运行配置工具，写入自己的接口地址及密钥。此步骤清除 Wi-Fi 设置，须先做再配网。
-3. 短按确定唤醒，长按进入 SETTINGS；上下选 BLE / START，确定开启。手机 EspBlufi App 扫描 BLUFI_CodexBoard，连接后选 Station/STA，输入 2.4GHz Wi-Fi／热点名称和密码并确认。iPhone 热点必要时开“最大兼容性”。连接成功会重启，再按确定唤醒。
-4. 显示 SYNCED 后，上下循环九页；概览短按确定切换范围，其他页短按刷新，长按进入设置／返回。30 秒无操作自动息屏。
-5. 断网可在设置选 WI-FI / RECONNECT；换网重新开启 BLE 配网。未连上时核对名称、密码并重试。
+1. 在已登录 Codex 的常驻 Mac 上，按 GitHub README 安装后端并准备手机热点可访问的 HTTPS 接口。
+2. 刷入固件后 USB 接 Mac，按 README 用配置工具写入自己的接口及密钥；此步骤清空 Wi-Fi，须先配置再配网。
+3. 确认唤醒，长按进入 SETTINGS，上下选 BLE / START 后确认。手机 EspBlufi 扫描 BLUFI_CodexBoard，连接并选 Station/STA，填写 2.4GHz Wi-Fi／热点名称、密码后确认；iPhone 热点可开“最大兼容性”。成功后设备重启，确认唤醒。
+4. 显示 SYNCED 后上下翻页；概览短按确认切换范围，其他页短按刷新，长按进入设置／返回。LIGHT 调亮度，SLEEP 调息屏时间并自动保存，息屏仍会同步。
+5. 断网选 WI-FI / RECONNECT；换网重开 BLE 配网。连接失败核对名称和密码再试。

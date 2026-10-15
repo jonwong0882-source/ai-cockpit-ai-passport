@@ -30,6 +30,15 @@ run_static_checks() {
         tests/test_token_ui_logic.c main/token_ui_logic.c -o "${test_dir}/test_token_ui_logic"
     "${test_dir}/test_token_ui_logic"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_token_endpoint.c main/token_endpoint.c -o "${test_dir}/test_token_endpoint"
+    "${test_dir}/test_token_endpoint"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_token_transfer.c main/token_transfer.c -o "${test_dir}/test_token_transfer"
+    "${test_dir}/test_token_transfer"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/token_queue_stubs -Imain \
+        tests/test_token_updates.c main/token_updates.c -o "${test_dir}/test_token_updates"
+    "${test_dir}/test_token_updates"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_ui_pixel_math.c main/ui_pixel_math.c \
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
@@ -76,6 +85,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_install_passport_skills.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_token_server.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tools/check_token_font.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

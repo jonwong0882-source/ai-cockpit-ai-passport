@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-void token_power_init(token_power_t *p) { memset(p, 0, sizeof(*p)); }
+void token_power_init(token_power_t *p) { memset(p, 0, sizeof(*p)); p->idle_ms=TOKEN_IDLE_MS; }
 token_input_result_t token_power_input(token_power_t *p, bool confirm, uint64_t now) {
     if (!p->awake) {
         if (!confirm) return TOKEN_INPUT_IGNORE;
@@ -14,7 +14,7 @@ token_input_result_t token_power_input(token_power_t *p, bool confirm, uint64_t 
     return TOKEN_INPUT_FORWARD;
 }
 bool token_power_tick(token_power_t *p, uint64_t now) {
-    if (p->awake && now >= p->last_input_ms && now-p->last_input_ms >= TOKEN_IDLE_MS) {
+    if (p->awake && p->idle_ms && now >= p->last_input_ms && now-p->last_input_ms >= p->idle_ms) {
         p->awake=false; return true;
     }
     return false;
@@ -51,4 +51,48 @@ int token_navigation_next(int page, bool up) {
     int step=up?9:1, next=(page+step)%10;
     if(next==7) next=(next+step)%10;
     return next;
+}
+
+static const uint32_t brightness_levels[]={10,20,35,50,70,100};
+bool token_brightness_valid(uint32_t percent) {
+    for(unsigned i=0;i<sizeof(brightness_levels)/sizeof(brightness_levels[0]);i++)
+        if(percent==brightness_levels[i]) return true;
+    return false;
+}
+uint32_t token_brightness_next(uint32_t percent) {
+    unsigned count=sizeof(brightness_levels)/sizeof(brightness_levels[0]);
+    for(unsigned i=0;i<count;i++) if(percent==brightness_levels[i]) return brightness_levels[(i+1)%count];
+    return TOKEN_BRIGHTNESS_DEFAULT;
+}
+
+uint32_t token_sync_delay(uint32_t minutes, unsigned failures) {
+    if(!minutes) return 0; /* Manual mode disables scheduled retries too. */
+    if(failures) {
+        const uint32_t delays[]={30,60,120,300};
+        return delays[failures>=4?3:failures-1];
+    }
+    return minutes>UINT32_MAX/60?UINT32_MAX:minutes*60;
+}
+
+unsigned token_sync_failure_count(unsigned previous,bool received,bool stale) {
+    if(received && !stale) return 0;
+    return previous>=4?4:previous+1;
+}
+
+static const uint32_t sleep_levels[]={15,30,60,120,300,0};
+bool token_sleep_valid(uint32_t seconds) {
+    for(unsigned i=0;i<sizeof(sleep_levels)/sizeof(sleep_levels[0]);i++)
+        if(seconds==sleep_levels[i]) return true;
+    return false;
+}
+uint32_t token_sleep_next(uint32_t seconds) {
+    unsigned count=sizeof(sleep_levels)/sizeof(sleep_levels[0]);
+    for(unsigned i=0;i<count;i++) if(seconds==sleep_levels[i]) return sleep_levels[(i+1)%count];
+    return TOKEN_IDLE_MS/1000;
+}
+void token_power_set_sleep(token_power_t *p,uint32_t seconds) {
+    p->idle_ms=(token_sleep_valid(seconds)?seconds:TOKEN_IDLE_MS/1000)*1000;
+}
+uint32_t token_sync_pending_after_fetch(uint32_t requests) {
+    return requests & ~TOKEN_NET_REFRESH;
 }

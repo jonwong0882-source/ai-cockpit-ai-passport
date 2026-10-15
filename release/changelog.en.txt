@@ -1,0 +1,4 @@
+Added saved LIGHT brightness and SLEEP idle-timeout settings, from 15 seconds to 5 minutes or always on.
+Softened the neon palette, deepened the background and added dimensional shading to large digits.
+Improved connection retries and address failover, merged repeated refresh presses, and fixed a refresh status potentially replacing newly received data.
+Cached data stays labelled CACHED until fresh data returns as SYNCED. The Mac bridge retries failed upstream queries sooner. Unstable networks may still temporarily show TLS RETRY.
